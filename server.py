@@ -31,4 +31,5 @@ class Server:
             logging.critical("Can't establish listener", exc_info=ex)
         finally:
             self.sock.close()
+            self.sock = None
             logging.info("closed socket")

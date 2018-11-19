@@ -10,8 +10,14 @@ class Connection:
         self.name = name
 
     def send(self, message):
-        logging.debug("{} sends message".format(self.name))
-        self.sock.sendall(message)
+        logging.debug("sending message to {}".format(self.name))
+        total = len(message)
+        total_sent = 0
+        remaining = message
+        while total_sent < total:
+            sent = self.sock.send(remaining)
+            total_sent += sent
+            remaining = remaining[sent:]
 
     def receive(self):
         logging.debug("receive messages from {}".format(self.name))
