@@ -10,7 +10,7 @@ class Connection:
         self.name = name
 
     def send(self, message):
-        logging.debug("sending message to {}:".format(self.name), message)
+        logging.debug("sending message to {}:\n{}".format(self.name, message))
         total = len(message)
         total_sent = 0
         remaining = message
@@ -24,6 +24,8 @@ class Connection:
         chunks = []
         while total_received < length:
             chunk = self.sock.recv(min([length - total_received]), 4096)
+            if chunk==b'':
+                raise RuntimeError("socket connection broken")
             chunks.append(chunk)
             total_received += len(chunk)
         return b''.join(chunks)
@@ -34,8 +36,14 @@ class Connection:
         if pack_type == b'N':
             # Null message? This message has no length. Just a single byte. Weird.
             return pack_type, pack_type
-        pack_length = self.__receive_raw(4)
-        pack_header = b''.join([pack_type, pack_length])
+        if pack_type == b'\x00':
+            # Initialization packet. No type. This, and the next 3 bytes are the length
+            pack_length = self.__receive_raw(3)
+            pack_length = b''.join([pack_type, pack_length])
+            pack_header = pack_length
+        else:
+            pack_length = self.__receive_raw(4)
+            pack_header = b''.join([pack_type, pack_length])
         pack_length = int.from_bytes(pack_length, 'big')
         pack_body = self.__receive_raw(pack_length - 4)
         pack = b''.join([pack_header, pack_body])
@@ -43,7 +51,15 @@ class Connection:
 
 
     def receive(self):
+        packets = []
         logging.debug("receive message from {}:".format(self.name))
-        packet, pack_type = self.receive_packet()
-        logging.debug("received message from {}:".format(self.name), packet)
-        return packet
+        while True:
+            logging.debug("receive packet from {}:".format(self.name))
+            packet, pack_type = self.receive_packet()
+            packets.append(packet)
+            logging.debug("received packet from {}:\n{}".format(self.name, packet))
+            if not pack_type in (b'B', b'D', b'P', b'E'):
+                break
+        message = b''.join(packets)
+        logging.debug("received message from {}:\n{}".format(self.name, message))
+        return message

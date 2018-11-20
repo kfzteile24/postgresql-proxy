@@ -124,7 +124,7 @@ class Proxy():
         if response[0:1]==b'E':
             # is error. Wait for next message without passing talk token to the other party
             return response
-        return response,
+        return response
 
 
 if(__name__=='__main__'):
