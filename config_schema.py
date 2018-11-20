@@ -1,5 +1,7 @@
 import logging
 
+''' This class is used to validate the config
+'''
 class Schema:
     def __init__(self):
         pass

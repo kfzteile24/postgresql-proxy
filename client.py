@@ -1,4 +1,6 @@
-import socket, pg_connection, logging
+import logging
+import pg_connection
+import socket
 
 class Client:
     def __init__(self, ip, port, target, name = ''):

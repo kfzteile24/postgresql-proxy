@@ -1,9 +1,10 @@
-import psycopg2, re
+import psycopg2
+import re
 
 # The field to replace
 field_pattern = re.compile('(?<=[^\w])count\(distinct (?:cast\()?("[^"]+")\.("[^"]+")(?: as text\))?\)', re.IGNORECASE)
 # Table name
-table_pattern = re.compile('from \(\s*select \* from ([^\)]+)\s*\) ("[^"]+")', re.IGNORECASE | re.DOTALL)
+table_pattern = re.compile('from \(\s*select \* from ([^\)]+)\s*\) (?:AS )?("[^"]+")', re.IGNORECASE | re.DOTALL)
 
 def rewrite_query(query, context):
     original_table = ''
@@ -83,9 +84,14 @@ def rewrite_query(query, context):
 
 
     query = query.decode('utf-8')
+    # Matches this string. The 2 groups are `schema.table` and `"alias"`
+    # FROM (SELECT * FROM schema.table) "alias"
     table_result = table_pattern.search(query)
     if table_result is not None:
         original_table = table_result.group(1).strip()
         table_alias = table_result.group(2).strip()
 
+    # Replaces count(distinct ...) with hll_cardinality(hll_union_agg(...)) :: BIGINT
+    # where and how it is appropriate
+    # the inner function `replace` uses the variables `original_table` and `table_alias` from this scope (smelly code)
     return field_pattern.sub(replace, query).encode('utf-8')

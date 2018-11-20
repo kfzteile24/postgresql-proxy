@@ -1,9 +1,75 @@
-import server, client, connection, logging, config_schema as cfg
+import client
+import config_schema as cfg
+import connection
+import logging
+import server
+
+'''For every configured instance, a Proxy object is created, that creates a Server object and starts it.
+Upon start, a new thread is started for the listening socket.
+When a connection occurs, the thread managed by the Server object calls the __on_connect method.
+
+In the __on_connect method, 2 sockets are used: one with the client (opened automatically on client connection),
+another with the PostgreSql server, opened manually.
+
+The proxy acts as a mediator that passes a "speaker" token to each of the sockets. The "speaker" sends a message to the
+proxy, and the proxy intercepts it, and relays it to the other party. The trick is in properly passing the "speaker"
+token, when the party stops talking. Postgresql is interesting in this sense because it signals a stop by saying
+that it's ready for another command.
+'''
 
 class Proxy():
     def __init__(self, instance_config: cfg.InstanceSettings, plugins: list):
         self.instance_config : cfg.InstanceSettings = instance_config
         self.plugins : list = plugins
+
+
+    def start(self):
+        listen_config = self.instance_config.listen
+        serv = server.Server(self.__on_connect)
+        serv.listen(listen_config.host, listen_config.port, name=listen_config.name)
+
+
+    # This method is multi-threaded. A new client_conn is created when someone connects,
+    # and it's passed on to this method in its own thread
+    def __on_connect(self, client_conn: connection.Connection):
+        try:
+            redirect_config = self.instance_config.redirect
+            with client.Client(redirect_config.host,
+                               redirect_config.port,
+                               name = redirect_config.name,
+                               target = connection.TYPE_SERVER) as pg_conn:
+                speaker = client_conn
+                listener = pg_conn
+
+                # Pass the talker token in a a loop until someone terminates it with "Z" command
+                while True:
+                    message = speaker.receive()
+
+                    if len(message) == 0:
+                        logging.info("Connection closed for speaker %s", speaker.name)
+                        break
+
+                    if speaker.target==connection.TYPE_CLIENT:
+                        logging.info("intercepting client command")
+                        message = self.__intercept_command(message)
+                    elif speaker.target==connection.TYPE_SERVER:
+                        logging.info("intercepting server response")
+                        message = self.__intercept_response(message)
+
+                    logging.debug("Received message. Relaying. Speaker: %s, message:\n%s", speaker.name, message)
+                    listener.send(message)
+
+                    # If the client sends an 'X' request, it wants to terminate the session. Close the connection
+                    if speaker.target==connection.TYPE_CLIENT and message[0:1]==b'X':
+                        break
+
+                    tmp = listener
+                    listener = speaker
+                    speaker = tmp
+        except Exception as ex:
+            logging.error("Error communicating\n%s", redirect_config.__dict__, exc_info=True)
+        finally:
+            client_conn.sock.close()
 
 
     def __intercept_command(self, command):
@@ -57,57 +123,8 @@ class Proxy():
     def __intercept_response(self, response):
         if response[0:1]==b'E':
             # is error. Wait for next message without passing talk token to the other party
-            return response, False
-        return response, True
-
-    # This method is multi-threaded. A new client_conn is created when someone connects,
-    # and it's passed on to this method in its own thread
-    def __on_connect(self, client_conn: connection.Connection):
-        try:
-            redirect_config = self.instance_config.redirect
-            with client.Client(redirect_config.host,
-                               redirect_config.port,
-                               name = redirect_config.name,
-                               target = connection.TYPE_SERVER) as pg_conn:
-                speaker = client_conn
-                listener = pg_conn
-
-                # Pass the talker token in a a loop until someone terminates it with "Z" command
-                while True:
-                    pass_token = True
-                    message = speaker.receive()
-
-                    if len(message) == 0:
-                        logging.info("Connection closed for speaker %s", speaker.name)
-                        break
-
-                    if speaker.target==connection.TYPE_CLIENT:
-                        logging.info("intercepting client command")
-                        message = self.__intercept_command(message)
-                    elif speaker.target==connection.TYPE_SERVER:
-                        logging.info("intercepting server response")
-                        message, pass_token = self.__intercept_response(message)
-
-                    logging.debug("Received message. Relaying. Speaker: %s, message:\n%s", speaker.name, message)
-                    listener.send(message)
-
-                    # If the client sends an 'X' request, it wants to terminate the session. Close the connection
-                    if speaker.target==connection.TYPE_CLIENT and message[0:1]==b'X':
-                        break
-
-                    if pass_token:
-                        tmp = listener
-                        listener = speaker
-                        speaker = tmp
-        except Exception as ex:
-            logging.error("Error communicating\n%s", redirect_config.__dict__, exc_info=True)
-        finally:
-            client_conn.sock.close()
-
-    def start(self):
-        listen_config = self.instance_config.listen
-        serv = server.Server(self.__on_connect)
-        serv.listen(listen_config.host, listen_config.port, name=listen_config.name)
+            return response
+        return response,
 
 
 if(__name__=='__main__'):
