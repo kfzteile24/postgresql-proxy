@@ -25,7 +25,7 @@ class Proxy():
 
     def start(self):
         listen_config = self.instance_config.listen
-        serv = server.Server(self.__on_connect)
+        serv = server.Server(self.__on_connect, self.instance_config)
         serv.listen(listen_config.host, listen_config.port, name=listen_config.name)
 
 
