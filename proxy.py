@@ -18,9 +18,9 @@ that it's ready for another command.
 '''
 
 class Proxy():
-    def __init__(self, instance_config: cfg.InstanceSettings, plugins: list):
-        self.instance_config : cfg.InstanceSettings = instance_config
-        self.plugins : list = plugins
+    def __init__(self, instance_config, plugins):
+        self.instance_config = instance_config
+        self.plugins = plugins
 
 
     def start(self):
@@ -31,7 +31,7 @@ class Proxy():
 
     # This method is multi-threaded. A new client_conn is created when someone connects,
     # and it's passed on to this method in its own thread
-    def __on_connect(self, client_conn: connection.Connection):
+    def __on_connect(self, client_conn):
         try:
             redirect_config = self.instance_config.redirect
             with client.Client(redirect_config.host,
@@ -131,7 +131,7 @@ if(__name__=='__main__'):
     import importlib, yaml, os
 
     path = os.path.dirname(os.path.realpath(__file__))
-    config : cfg.Config = None
+    config = None
     with open(path + '/' + 'config.yml', 'r') as fp:
         config = cfg.Config(yaml.load(fp))
 

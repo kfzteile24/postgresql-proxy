@@ -9,7 +9,7 @@ class Schema:
     def _validate(self):
         pass
 
-    def __hyphen_to_underscore(self, k: str) -> str:
+    def __hyphen_to_underscore(self, k):
         return k.replace('-', '_')
 
     def _populate(self, data, definition):
@@ -41,8 +41,8 @@ class Schema:
 
 class InterceptQuerySettings(Schema):
     def __init__(self, data):
-        self.plugin : str = None
-        self.function : str = None
+        self.plugin = None
+        self.function = None
 
         self._populate(data, {
             'plugin': str,
@@ -56,8 +56,8 @@ class InterceptQuerySettings(Schema):
 
 class InterceptCommandSettings(Schema):
     def __init__(self, data):
-        self.queries : [InterceptQuerySettings] = []
-        self.connects : str = None
+        self.queries = []
+        self.connects = None
 
         self._populate(data, {
             'queries': [InterceptQuerySettings],
@@ -67,8 +67,8 @@ class InterceptCommandSettings(Schema):
 
 class InterceptSettings(Schema):
     def __init__(self, data):
-        self.commands : InterceptCommandSettings = None
-        self.responses : str = None
+        self.commands = None
+        self.responses = None
 
         self._populate(data, {
             'commands': InterceptCommandSettings,
@@ -78,9 +78,9 @@ class InterceptSettings(Schema):
 
 class Connection(Schema):
     def __init__(self, data):
-        self.name : str = None
-        self.host : str = None
-        self.port : int = None
+        self.name = None
+        self.host = None
+        self.port = None
 
         self._populate(data, {
             'name': str,
@@ -95,9 +95,9 @@ class Connection(Schema):
 
 class InstanceSettings(Schema):
     def __init__(self, data):
-        self.listen : Connection = None
-        self.redirect : Connection = None
-        self.intercept : InterceptSettings = None
+        self.listen = None
+        self.redirect = None
+        self.intercept = None
 
         self._populate(data, {
             'listen': Connection,
@@ -112,9 +112,9 @@ class InstanceSettings(Schema):
 
 class Settings(Schema):
     def __init__(self, data):
-        self.log_level : str = None
-        self.intercept_log : str = None
-        self.general_log : str = None
+        self.log_level = None
+        self.intercept_log = None
+        self.general_log = None
 
         self._populate(data, {
             'log_level': str,
@@ -129,14 +129,14 @@ class Settings(Schema):
 
 class Config(Schema):
     def __init__(self, data):
-        self.plugins : [str] = []
-        self.settings : Settings = None
-        self.instances : [InstanceSettings] = []
+        self.plugins = []
+        self.settings = None
+        self.instances = []
 
         self._populate(data, {
-            'plugins': [str],
-            'settings': Settings,
-            'instances': [InstanceSettings]
+            'plugins' : [str],
+            'settings' : Settings,
+            'instances' : [InstanceSettings]
         })
 
     def _validate(self):

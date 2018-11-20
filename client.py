@@ -9,7 +9,7 @@ class Client:
         self.target = target
         self.name = name
 
-    def __enter__(self) -> pg_connection.PgConnection:
+    def __enter__(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.connect((self.ip, self.port))
         logging.info("initiated client connection to %s:%s called %s", self.ip, self.port, self.name)
