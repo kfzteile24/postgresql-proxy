@@ -1,130 +1,184 @@
-import client
+'''For every configured instance, a Proxy object is created, that starts a listener.
+On connect, it initiates a parallel connection to postgresql and pairs them together.
+Using selectors, packets are received, intercepted and relayed to the other party.
+
+Protocol:
+The challenge is in identifying 3 types of packets:
+1. With type and data.
+   ex. 1 byte for type identifier, 4 bytes header for header and body length, body. Usually the body is ended with
+   0x00 byte as well, that is part of the length.
+   The queries are part of this type of packets. A query is b'Q####SELECT whatever\\x00'
+2. Without type. They contain just a 4 byte header with packet length. It just so happens that the first byte is 0x00
+   just because nothing is that long. These contain information about connection.
+   Usually it's the client sending connection information. Ex.
+        b'x00x00x00O' - length
+        b'x00x03x00x00' - unexplained
+        then, separated by x00 is a list of key, value: user, database, application_name, client_encoding, etc
+        then, ended by b'x00'
+3. Without data. Just the type. Since it's b'N', it might be "null"? The whole packet is this single byte.
+   Signals "ok" according to wireshark
+
+Handling:
+proxy.py - connections and sockets things
+connection.py - parsing and composing packets, launching interceptors
+interceptors.py - intercepting for modification
+'''
+
 import config_schema as cfg
 import connection
 import logging
-import server
+import selectors
+import socket
+import time
+import threading
+import types
+from interceptors import ResponseInterceptor, CommandInterceptor
 
-'''For every configured instance, a Proxy object is created, that creates a Server object and starts it.
-Upon start, a new thread is started for the listening socket.
-When a connection occurs, the thread managed by the Server object calls the __on_connect method.
-
-In the __on_connect method, 2 sockets are used: one with the client (opened automatically on client connection),
-another with the PostgreSql server, opened manually.
-
-The proxy acts as a mediator that passes a "speaker" token to each of the sockets. The "speaker" sends a message to the
-proxy, and the proxy intercepts it, and relays it to the other party. The trick is in properly passing the "speaker"
-token, when the party stops talking. Postgresql is interesting in this sense because it signals a stop by saying
-that it's ready for another command.
-'''
-
-class Proxy():
+class Proxy:
     def __init__(self, instance_config, plugins):
-        self.instance_config = instance_config
         self.plugins = plugins
+        self.num_clients = 0
+        self.instance_config = instance_config
+        self.connections = []
+        self.selector = selectors.DefaultSelector()
+        self.selector_lock = threading.Lock()
 
 
-    def start(self):
-        listen_config = self.instance_config.listen
-        serv = server.Server(self.__on_connect, self.instance_config)
-        serv.listen(listen_config.host, listen_config.port, name=listen_config.name)
+    def __create_pg_connection(self, address, context):
+        redirect_config = self.instance_config.redirect
+
+        pg_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        pg_sock.connect((redirect_config.host, redirect_config.port))
+        pg_sock.setblocking(False)
+
+        events = selectors.EVENT_READ | selectors.EVENT_WRITE
+
+        pg_conn = connection.Connection(pg_sock,
+                                        name    = redirect_config.name + '_' + str(self.num_clients),
+                                        address = address,
+                                        events  = events,
+                                        context = context)
+
+        logging.info("initiated client connection to %s:%s called %s",
+                     redirect_config.host, redirect_config.port, redirect_config.name)
+        return pg_conn
 
 
-    # This method is multi-threaded. A new client_conn is created when someone connects,
-    # and it's passed on to this method in its own thread
-    def __on_connect(self, client_conn):
+    def __register_conn(self, conn):
+        with self.selector_lock:
+            self.selector.register(conn.sock, conn.events, data=conn)
+
+
+    def __unregister_conn(self, conn):
+        with self.selector_lock:
+            self.selector.unregister(conn.sock)
+
+
+    def accept_wrapper(self, sock):
+        clientsocket, address = sock.accept()  # Should be ready to 
+        clientsocket.setblocking(False)
+        self.num_clients+=1
+        sock_name = '{}_{}'.format(self.instance_config.listen.name, self.num_clients)
+        logging.info("connection from %s, connection initiated %s", address, sock_name)
+
+        events = selectors.EVENT_READ | selectors.EVENT_WRITE
+
+        # Context dictionary, for sharing state data, connection details, which might be useful for interceptors
+        context = {
+            'instance_config': self.instance_config
+        }
+
+        conn = connection.Connection(clientsocket,
+                                     name    = sock_name,
+                                     address = address,
+                                     events  = events,
+                                     context = context)
+
+        pg_conn = self.__create_pg_connection(address, context)
+
+        if self.instance_config.intercept is not None and self.instance_config.intercept.responses is not None:
+            pg_conn.interceptor = ResponseInterceptor(self.instance_config.intercept.responses, self.plugins, context)
+            pg_conn.redirect_conn = conn
+        
+        if self.instance_config.intercept is not None and self.instance_config.intercept.commands is not None:
+            conn.interceptor = CommandInterceptor(self.instance_config.intercept.commands, self.plugins, context)
+            conn.redirect_conn = pg_conn
+
+        self.__register_conn(conn)
+        self.__register_conn(pg_conn)
+
+
+    def threaded_io(self, mask, sock, conn):
+        if mask & selectors.EVENT_READ:
+            if not conn.is_reading:
+                conn.is_reading = True
+                logging.debug('%s can receive', conn.name)
+                recv_data = sock.recv(4096)  # Should be ready to read
+                conn.is_reading = False
+                if recv_data:
+                    logging.debug('%s received data:\n%s', conn.name, recv_data)
+                    conn.received(recv_data)
+                else:
+                    logging.info('%s connection closing %s', conn.name, conn.address)
+                    sock.close()
+                    # Make sure we don't add the sock to the selector again
+                    return
+        if mask & selectors.EVENT_WRITE:
+            if conn.out_bytes:
+                if not conn.is_writing:
+                    conn.is_writing = True
+                    logging.debug('sending to %s:\n%s', conn.name, conn.out_bytes)
+                    sent = sock.send(conn.out_bytes)  # Should be ready to write
+                    conn.is_writing = False
+                    conn.sent(sent)
+        self.__register_conn(conn)
+
+
+    def service_connection(self, key, mask):
+        sock = key.fileobj
+        conn = key.data
+        # Do threaded IO, in case time to process interceptors is big enough to care.
+        # This means that processing can happen at the same time as stuff is received.
+        # This way IO and processing won't block each other's resources.
+        # To ensure TCP integrity, manage one sock in a single thread.
+        self.__unregister_conn(conn)
+        new_thread = threading.Thread(target=self.threaded_io, args=[mask, sock, conn])
+        new_thread.start()
+
+
+    def listen(self, max_connections = 8):
+        '''Listen server socket. On connect launch a new thread with the client connection as an argument
+        '''
+        lconf = self.instance_config.listen
+        ip, port = (lconf.host, lconf.port)
         try:
-            redirect_config = self.instance_config.redirect
-            with client.Client(redirect_config.host,
-                               redirect_config.port,
-                               name = redirect_config.name,
-                               target = connection.TYPE_SERVER) as pg_conn:
-                speaker = client_conn
-                listener = pg_conn
-
-                # Pass the talker token in a a loop until someone terminates it with "Z" command
-                while True:
-                    message = speaker.receive()
-
-                    if len(message) == 0:
-                        logging.info("Connection closed for speaker %s", speaker.name)
-                        break
-
-                    if speaker.target==connection.TYPE_CLIENT:
-                        logging.info("intercepting client command")
-                        message = self.__intercept_command(message)
-                    elif speaker.target==connection.TYPE_SERVER:
-                        logging.info("intercepting server response")
-                        message = self.__intercept_response(message)
-
-                    logging.debug("Received message. Relaying. Speaker: %s, message:\n%s", speaker.name, message)
-                    listener.send(message)
-
-                    # If the client sends an 'X' request, it wants to terminate the session. Close the connection
-                    if speaker.target==connection.TYPE_CLIENT and message[0:1]==b'X':
-                        break
-
-                    tmp = listener
-                    listener = speaker
-                    speaker = tmp
-        except Exception as ex:
-            logging.error("Error communicating\n%s", redirect_config.__dict__, exc_info=True)
+            logging.info("listening to %s:%s", ip, port)
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.bind((ip, port))
+            self.sock.listen(max_connections)
+            self.sock.setblocking(False)
+            self.selector.register(self.sock, selectors.EVENT_READ, data=None)
+            while True:
+                events = self.selector.select(timeout=None)
+                hit = False
+                for key, mask in events:
+                    hit = True
+                    if key.data is None:
+                        self.accept_wrapper(key.fileobj)
+                    else:
+                        self.service_connection(key, mask)
+                if not hit:
+                    # When a message is being broadcast, each loop reads just once, a fixed max number of bytes.
+                    # Even if it's not all. So what happens is that on a next loop the socket will report more bytes.
+                    # In that case we don't want lags between loops. But if there was nothing happening in the last
+                    # loop, wait a while before the next one.
+                    time.sleep(0.01)
+        except OSError as ex:
+            logging.critical("Can't establish listener", exc_info=ex)
         finally:
-            client_conn.sock.close()
-
-
-    def __intercept_command(self, command):
-        logging.debug("Received command:\n%s", command)
-
-        # startup message that contains info about DB, user, etc.
-        if command[0:1] == b'\x00':
-            try:
-                connect_items = list(b.decode('utf-8') for b in command[8:-2].split(b'\x00'))
-                self.connect_params = dict(zip(connect_items[0::2], connect_items[1::2]))
-            except Exception as ex:
-                logging.error("Could not determine connection details\n%s", command, exc_info=True)
-
-        if self.instance_config.intercept is not None:
-            intercept = self.instance_config.intercept
-            if intercept.commands is not None:
-                intercept_commands = intercept.commands
-                if intercept_commands.queries is not None:
-                    intercept_queries = intercept_commands.queries
-                    if command[0:1] == b'Q':
-                        ''' Query commands begin with "Q". Followed by 4 bytes, which are a big-endian representation
-                        of an integer that is the length of the query + 5. 5 = 4 + 1. 4 bytes for the header (length),
-                        1 byte for the "footer" (zero byte).
-                        Take the query text, update if needed, re-assess the length and encode it back into binary.
-                        '''
-                        length = int.from_bytes(command[1:5], 'big')
-                        query = command[5:length]
-                        logging.getLogger('intercept').debug("intercepting query\n%s", query)
-                        for interceptor in self.instance_config.intercept.commands.queries:
-                            if interceptor.plugin in self.plugins:
-                                plugin = self.plugins[interceptor.plugin]
-                                if hasattr(plugin, interceptor.function):
-                                    func = getattr(plugin, interceptor.function)
-                                    query = func(query, self)
-                                    logging.getLogger('intercept').debug(
-                                        "modifying query using interceptor %s.%s\n%s",
-                                        interceptor.plugin,
-                                        interceptor.function,
-                                        query)
-                                else:
-                                    raise Exception("Can't find function {} in plugin {}".format(
-                                        interceptor.function,
-                                        interceptor.plugin
-                                    ))
-                            else:
-                                raise Exception("Plugin {} not loaded".format(interceptor.plugin))
-                        return b''.join([b'Q', (len(query) + 5).to_bytes(4, byteorder='big'), query, b'\x00'])
-        return command
-
-
-    def __intercept_response(self, response):
-        if response[0:1]==b'E':
-            # is error. Wait for next message without passing talk token to the other party
-            return response
-        return response
+            self.sock.close()
+            self.sock = None
+            logging.info("closed socket")
 
 
 if(__name__=='__main__'):
@@ -161,4 +215,4 @@ if(__name__=='__main__'):
     for instance in config.instances:
         logging.info("Starting proxy instance")
         proxy = Proxy(instance, plugins)
-        proxy.start()
+        proxy.listen()

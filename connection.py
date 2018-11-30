@@ -1,65 +1,62 @@
 import logging
 
-TYPE_SERVER=0
-TYPE_CLIENT=1
-
 class Connection:
-    def __init__(self, sock, target, name):
+    def __init__(self, sock, address, name, events, context):
         self.sock = sock
-        self.target = target
+        self.address = address
         self.name = name
+        self.events = events
+        self.context = context
+        self.is_reading = False
+        self.is_writing = False
+        self.interceptor = None
+        self.redirect_conn = None
+        self.out_bytes = b''
+        self.in_bytes = b''
 
-    def send(self, message):
-        logging.debug("sending message to {}:\n{}".format(self.name, message))
-        total = len(message)
-        total_sent = 0
-        remaining = message
-        while total_sent < total:
-            sent = self.sock.send(remaining)
-            total_sent += sent
-            remaining = remaining[sent:]
+    def parse_length(self, length_bytes):
+        return int.from_bytes(length_bytes, 'big')
 
-    def __receive_raw(self, length):
-        total_received = 0
-        chunks = []
-        while total_received < length:
-            chunk = self.sock.recv(min([length - total_received]), 4096)
-            if chunk==b'':
-                raise RuntimeError("socket connection broken")
-            chunks.append(chunk)
-            total_received += len(chunk)
-        return b''.join(chunks)
+    def encode_length(self, length):
+        return length.to_bytes(4, byteorder='big')
 
-
-    def receive_packet(self):
-        pack_type = self.__receive_raw(1)
-        if pack_type == b'N':
-            # Null message? This message has no length. Just a single byte. Weird.
-            return pack_type, pack_type
-        if pack_type == b'\x00':
-            # Initialization packet. No type. This, and the next 3 bytes are the length
-            pack_length = self.__receive_raw(3)
-            pack_length = b''.join([pack_type, pack_length])
-            pack_header = pack_length
-        else:
-            pack_length = self.__receive_raw(4)
-            pack_header = b''.join([pack_type, pack_length])
-        pack_length = int.from_bytes(pack_length, 'big')
-        pack_body = self.__receive_raw(pack_length - 4)
-        pack = b''.join([pack_header, pack_body])
-        return pack, pack_type
-
-
-    def receive(self):
-        packets = []
-        logging.debug("receive message from {}:".format(self.name))
+    def received(self, in_bytes):
+        self.in_bytes += in_bytes
+        # Read packet from byte array while there are enough bytes to make up a packet.
+        # Otherwise wait for more bytes to be received (break and exit)
         while True:
-            logging.debug("receive packet from {}:".format(self.name))
-            packet, pack_type = self.receive_packet()
-            packets.append(packet)
-            logging.debug("received packet from {}:\n{}".format(self.name, packet))
-            if not pack_type in (b'B', b'D', b'P', b'E'):
+            ptype = self.in_bytes[0:1]
+            if ptype == b'\x00':
+                if len(self.in_bytes) < 4:
+                    break
+                header_length = 4
+                body_length = self.parse_length(self.in_bytes[0:4]) - 4
+            elif ptype == b'N':
+                header_length = 1
+                body_length = 0
+            else:
+                if len(self.in_bytes) < 5:
+                    break
+                header_length = 5
+                body_length = self.parse_length(self.in_bytes[1:5]) - 4
+
+            length = header_length + body_length
+            if len(self.in_bytes) < length:
                 break
-        message = b''.join(packets)
-        logging.debug("received message from {}:\n{}".format(self.name, message))
-        return message
+            header = self.in_bytes[0:header_length]
+            body = self.in_bytes[header_length:length]
+            self.process_inbound_packet(header, body)
+            self.in_bytes = self.in_bytes[length:]
+
+    def process_inbound_packet(self, header, body):
+        if header != b'N':
+            packet_type = header[0:-4]
+            logging.info("intercepting packet of type '%s' from %s", packet_type, self.name)
+            body = self.interceptor.intercept(packet_type, body)
+            header = packet_type + self.encode_length(len(body) + 4)
+        message = header + body
+        logging.debug("Received message. Relaying. Speaker: %s, message:\n%s", self.name, message)
+        self.redirect_conn.out_bytes += message
+
+    def sent(self, num_bytes):
+        self.out_bytes = self.out_bytes[num_bytes:]

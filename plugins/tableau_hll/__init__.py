@@ -27,7 +27,7 @@ def rewrite_query(query, context):
 
             # need to know which columns are hll
             if not hll_table.lower() in column_cache:
-                db_conn_info = context.instance_config.redirect
+                db_conn_info = context['instance_config'].redirect
                 conn = None
                 try:
                     conn = psycopg2.connect(
@@ -36,8 +36,8 @@ def rewrite_query(query, context):
                             db_conn_info.host,
                             db_conn_info.port,
                             # Get auth information from the proxied request
-                            context.connect_params['database'],
-                            context.connect_params['user']
+                            context['connect_params']['database'],
+                            context['connect_params']['user']
                         )
                     )
                     
@@ -83,7 +83,6 @@ def rewrite_query(query, context):
         return match.group(0)
 
 
-    query = query.decode('utf-8')
     # Matches this string. The 2 groups are `schema.table` and `"alias"`
     # FROM schema.table) "alias"
     table_result = table_pattern.search(query)
@@ -94,4 +93,4 @@ def rewrite_query(query, context):
     # Replaces count(distinct ...) with hll_cardinality(hll_union_agg(...)) :: BIGINT
     # where and how it is appropriate
     # the inner function `replace` uses the variables `original_table` and `table_alias` from this scope (smelly code)
-    return field_pattern.sub(replace, query).encode('utf-8')
+    return field_pattern.sub(replace, query)
