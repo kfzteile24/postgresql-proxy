@@ -4,5 +4,8 @@ if [ -d .venv ] ; then
     rm -rf .venv
 fi
 
-python3 -m virtualenv -p python3 .venv
-.venv/bin/pip install -r requirements.txt
+if [ ! -f .venv/bin/python ] ; then
+    python3 -m virtualenv -p python3 .venv
+fi
+
+.venv/bin/pip install --requirement=requirements.txt --upgrade --exists-action=w
