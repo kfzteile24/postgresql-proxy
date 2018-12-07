@@ -186,8 +186,12 @@ if(__name__=='__main__'):
 
     path = os.path.dirname(os.path.realpath(__file__))
     config = None
-    with open(path + '/' + 'config.yml', 'r') as fp:
-        config = cfg.Config(yaml.load(fp))
+    try:
+        with open(path + '/' + 'config.yml', 'r') as fp:
+            config = cfg.Config(yaml.load(fp))
+    except Exception:
+        logging.critical("Could not read config. Aborting.")
+        exit(1)
 
     logging.basicConfig(
         filename=config.settings.general_log,

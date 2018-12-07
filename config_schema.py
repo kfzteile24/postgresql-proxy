@@ -28,15 +28,16 @@ class Schema:
                         setattr(self, k, vtype(v))
             self._validate()
         except AssertionError as err:
-            logging.error("Invalid config", error=err)
+            logging.error("Invalid config: %s", str(err))
+            raise Exception("Invalid config")
 
     def _assert_non_empty(self, *attrs):
         for attr in attrs:
-            assert len(getattr(self, attr)) > 0, "{}.{} must not be empty".format(__class__.__name__, attr)
+            assert len(getattr(self, attr)) > 0, "{}.{} must not be empty".format(type(self).__name__, attr)
 
     def _assert_non_null(self, *attrs):
         for attr in attrs:
-            assert getattr(self, attr) is not None, "{}.{} must not be None".format(__class__.__name__, attr)
+            assert getattr(self, attr) is not None, "{}.{} must not be None".format(type(self).__name__, attr)
 
 
 class InterceptQuerySettings(Schema):
@@ -90,7 +91,7 @@ class Connection(Schema):
 
     def _validate(self):
         self._assert_non_null('name', 'host', 'port')
-        self._assert_non_empty('name', 'host')
+        self._assert_non_empty('name')
 
 
 class InstanceSettings(Schema):
