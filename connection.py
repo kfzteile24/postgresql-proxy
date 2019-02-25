@@ -7,8 +7,6 @@ class Connection:
         self.name = name
         self.events = events
         self.context = context
-        self.is_reading = False
-        self.is_writing = False
         self.interceptor = None
         self.redirect_conn = None
         self.out_bytes = b''

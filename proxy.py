@@ -29,8 +29,6 @@ import connection
 import logging
 import selectors
 import socket
-import time
-import threading
 import types
 from interceptors import ResponseInterceptor, CommandInterceptor
 
@@ -41,7 +39,6 @@ class Proxy:
         self.instance_config = instance_config
         self.connections = []
         self.selector = selectors.DefaultSelector()
-        self.selector_lock = threading.Lock()
 
 
     def __create_pg_connection(self, address, context):
@@ -65,13 +62,11 @@ class Proxy:
 
 
     def __register_conn(self, conn):
-        with self.selector_lock:
-            self.selector.register(conn.sock, conn.events, data=conn)
+        self.selector.register(conn.sock, conn.events, data=conn)
 
 
     def __unregister_conn(self, conn):
-        with self.selector_lock:
-            self.selector.unregister(conn.sock)
+        self.selector.unregister(conn.sock)
 
 
     def accept_wrapper(self, sock):
@@ -108,42 +103,24 @@ class Proxy:
         self.__register_conn(pg_conn)
 
 
-    def threaded_io(self, mask, sock, conn):
-        if mask & selectors.EVENT_READ:
-            if not conn.is_reading:
-                conn.is_reading = True
-                logging.debug('%s can receive', conn.name)
-                recv_data = sock.recv(4096)  # Should be ready to read
-                conn.is_reading = False
-                if recv_data:
-                    logging.debug('%s received data:\n%s', conn.name, recv_data)
-                    conn.received(recv_data)
-                else:
-                    logging.info('%s connection closing %s', conn.name, conn.address)
-                    sock.close()
-                    # Make sure we don't add the sock to the selector again
-                    return
-        if mask & selectors.EVENT_WRITE:
-            if conn.out_bytes:
-                if not conn.is_writing:
-                    conn.is_writing = True
-                    logging.debug('sending to %s:\n%s', conn.name, conn.out_bytes)
-                    sent = sock.send(conn.out_bytes)  # Should be ready to write
-                    conn.is_writing = False
-                    conn.sent(sent)
-        self.__register_conn(conn)
-
-
     def service_connection(self, key, mask):
         sock = key.fileobj
         conn = key.data
-        # Do threaded IO, in case time to process interceptors is big enough to care.
-        # This means that processing can happen at the same time as stuff is received.
-        # This way IO and processing won't block each other's resources.
-        # To ensure TCP integrity, manage one sock in a single thread.
-        self.__unregister_conn(conn)
-        new_thread = threading.Thread(target=self.threaded_io, args=[mask, sock, conn])
-        new_thread.start()
+        if mask & selectors.EVENT_READ:
+            logging.debug('%s can receive', conn.name)
+            recv_data = sock.recv(4096)  # Should be ready to read
+            if recv_data:
+                logging.debug('%s received data:\n%s', conn.name, recv_data)
+                conn.received(recv_data)
+            else:
+                logging.info('%s connection closing %s', conn.name, conn.address)
+                sock.close()
+        if mask & selectors.EVENT_WRITE:
+            if conn.out_bytes:
+                logging.debug('sending to %s:\n%s', conn.name, conn.out_bytes)
+                sent = sock.send(conn.out_bytes)  # Should be ready to write
+                conn.sent(sent)
+
 
 
     def listen(self, max_connections = 8):
@@ -167,12 +144,6 @@ class Proxy:
                         self.accept_wrapper(key.fileobj)
                     else:
                         self.service_connection(key, mask)
-                if not hit:
-                    # When a message is being broadcast, each loop reads just once, a fixed max number of bytes.
-                    # Even if it's not all. So what happens is that on a next loop the socket will report more bytes.
-                    # In that case we don't want lags between loops. But if there was nothing happening in the last
-                    # loop, wait a while before the next one.
-                    time.sleep(0.01)
         except OSError as ex:
             logging.critical("Can't establish listener", exc_info=ex)
         finally:
