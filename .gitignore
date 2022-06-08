@@ -108,3 +108,6 @@ venv.bak/
 
 # private config information
 config.yml
+
+# Intellij
+.idea

@@ -14,9 +14,8 @@ Currently used for rewriting queries to force proper use of postgres-hll module 
   ```
 3. Run [setup.sh](setup.sh)
   ```
-  ./setup.sh
+  source setup.sh
   ```
-4. Make a copy of [config.yml.example](config.yml.example) called `config.yml` and configure your proxy instances. Create the log directories if they're not there.
 
 ## Configuring
 In the `config.yml` file you can define the following things
