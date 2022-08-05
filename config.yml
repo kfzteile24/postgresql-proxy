@@ -3,8 +3,8 @@ plugins:
 
 settings:
   log-level: debug
-  intercept-log: /var/log/postgres-proxy/intercept.log
-  general-log: /var/log/postgres-proxy/general.log
+  intercept-log: logs/intercept.log
+  general-log: logs/general.log
 
 instances:
   - listen:

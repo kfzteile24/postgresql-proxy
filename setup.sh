@@ -1,11 +1,11 @@
 #!/bin/bash
-python3 -m pip install virtualenv
-if [ -d .venv ] ; then
-    rm -rf .venv
+
+if [ ! -d "./.venv" ]; then
+  echo "Creating virtual environment.."
+  python3 -m venv .venv
 fi
 
-if [ ! -f .venv/bin/python ] ; then
-    python3 -m virtualenv -p python3 .venv
-fi
+source .venv/bin/activate
 
-.venv/bin/pip install --requirement=requirements.txt --upgrade --exists-action=w
+echo "Installing requirements.."
+python3 -m pip install -r requirements.txt

@@ -115,6 +115,7 @@ class Proxy:
             else:
                 logging.info('%s connection closing %s', conn.name, conn.address)
                 sock.close()
+                self.__unregister_conn(conn)
         if mask & selectors.EVENT_WRITE:
             if conn.out_bytes:
                 logging.debug('sending to %s:\n%s', conn.name, conn.out_bytes)
@@ -153,13 +154,15 @@ class Proxy:
 
 
 if(__name__=='__main__'):
-    import importlib, yaml, os
+    import importlib
+    import os
+    from yaml import load, Loader
 
     path = os.path.dirname(os.path.realpath(__file__))
     config = None
     try:
         with open(path + '/' + 'config.yml', 'r') as fp:
-            config = cfg.Config(yaml.load(fp))
+            config = cfg.Config(load(stream=fp, Loader=Loader))
     except Exception:
         logging.critical("Could not read config. Aborting.")
         exit(1)
